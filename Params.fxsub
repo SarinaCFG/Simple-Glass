@@ -1,0 +1,84 @@
+// Based on full.fx ver2.0 by: 舞力介入P
+
+// Coordinate transformation matrices
+float4x4 WorldViewProjMatrix : WORLDVIEWPROJECTION;
+float4x4 WorldMatrix : WORLD;
+float4x4 ViewMatrix : VIEW;
+float4x4 LightWorldViewProjMatrix : WORLDVIEWPROJECTION < string Object = "Light";> ;
+
+float3 LightDirection : DIRECTION < string Object = "Light";> ;
+float3 CameraPosition : POSITION < string Object = "Camera";> ;
+
+// Material Color
+float4 MaterialDiffuse : DIFFUSE < string Object = "Geometry";> ;
+float3 MaterialAmbient : AMBIENT < string Object = "Geometry";> ;
+float3 MaterialEmmisive : EMISSIVE < string Object = "Geometry";> ;
+float3 MaterialSpecular : SPECULAR < string Object = "Geometry";> ;
+float SpecularPower : SPECULARPOWER < string Object = "Geometry";> ;
+float3 MaterialToon : TOONCOLOR;
+float4 EdgeColor : EDGECOLOR;
+float4 GroundShadowColor : GROUNDSHADOWCOLOR;
+
+// Light Color
+float3 LightDiffuse : DIFFUSE < string Object = "Light";> ;
+float3 LightAmbient : AMBIENT < string Object = "Light";> ;
+float3 LightSpecular : SPECULAR < string Object = "Light";> ;
+
+static float4 DiffuseColor = MaterialDiffuse * float4(LightDiffuse, 1.0f);
+static float3 AmbientColor = MaterialAmbient * LightAmbient + MaterialEmmisive;
+static float3 SpecularColor = MaterialSpecular * LightSpecular;
+
+// Texture Material Morph Values
+float4 TextureAddValue : ADDINGTEXTURE;
+float4 TextureMulValue : MULTIPLYINGTEXTURE;
+float4 SphereAddValue : ADDINGSPHERETEXTURE;
+float4 SphereMulValue : MULTIPLYINGSPHERETEXTURE;
+
+// Subtexture flag
+bool use_subtexture;
+// Perspective flag
+bool parthf;
+// Translucency Flag
+bool transp; 
+// Sphere map additive compositing flag
+bool spadd;
+
+#define SKII1 1500
+#define SKII2 8000
+#define Toon 3
+
+// Object Texture
+texture ObjectTexture : MATERIALTEXTURE;
+sampler ObjTexSampler = sampler_state
+{
+    texture = <ObjectTexture>;
+    MINFILTER = LINEAR;
+    MAGFILTER = LINEAR;
+    MIPFILTER = LINEAR;
+    ADDRESSU = WRAP;
+    ADDRESSV = WRAP;
+};
+
+// Sphere Map Texture
+texture ObjectSphereMap : MATERIALSPHEREMAP;
+sampler ObjSphareSampler = sampler_state
+{
+    texture = <ObjectSphereMap>;
+    MINFILTER = LINEAR;
+    MAGFILTER = LINEAR;
+    MIPFILTER = LINEAR;
+    ADDRESSU = WRAP;
+    ADDRESSV = WRAP;
+};
+
+// Toon Map Texture
+texture ObjectToonTexture : MATERIALTOONTEXTURE;
+sampler ObjToonSampler = sampler_state
+{
+    texture = <ObjectToonTexture>;
+    MINFILTER = LINEAR;
+    MAGFILTER = LINEAR;
+    MIPFILTER = NONE;
+    ADDRESSU = CLAMP;
+    ADDRESSV = CLAMP;
+};

@@ -1,0 +1,280 @@
+#include "../Params.fxsub"
+
+technique EdgeTec < string MMDPass = "edge"; > {}
+technique ShadowTec < string MMDPass = "shadow"; > {}
+technique ZplotTec < string MMDPass = "zplot"; > {}
+
+shared texture NormalTarget : RENDERCOLORTARGET <>;
+shared texture ColorTarget : RENDERCOLORTARGET <>;
+shared texture VisibilityTarget : RENDERCOLORTARGET <>;
+shared texture2D Depth0 : RENDERDEPTHSTENCILTARGET <>;
+
+#ifdef NORMAL_TEX
+    texture NormalTex < string ResourceName = NORMAL_TEX; >;
+    sampler NormalMapSampler = sampler_state
+    {
+       Texture = (NormalTex);
+       ADDRESSU = WRAP;
+       ADDRESSV = WRAP;
+       MAGFILTER = LINEAR;
+       MINFILTER = ANISOTROPIC;
+       MIPFILTER = LINEAR;
+    };
+#endif
+
+// Function to calculate tangent and binormal for normal map
+// Tangent and binormal values are not passed from MMD, so they are calculated in the pixel shader
+float3x3 compute_tangent_frame(float3 Normal, float3 View, float2 UV)
+{
+    float3 dp1 = ddx(View);
+    float3 dp2 = ddy(View);
+    float2 duv1 = ddx(UV);
+    float2 duv2 = ddy(UV);
+    float3x3 M = float3x3(dp1, dp2, cross(dp1, dp2));
+    float2x3 inverseM = float2x3(cross(M[1], M[2]), cross(M[2], M[0]));
+    float3 Tangent = mul(float2(duv1.x, duv2.x), inverseM);
+    float3 Binormal = mul(float2(duv1.y, duv2.y), inverseM);
+    return float3x3(normalize(Tangent), normalize(Binormal), Normal);
+}
+
+
+struct Pass1VS_Output
+{
+    float4 Pos : POSITION;
+    float2 Tex : TEXCOORD1;
+    float3 Normal : TEXCOORD2;
+    float3 Eye : TEXCOORD3;
+    float2 SpTex    : TEXCOORD4;
+    float4 Color    : COLOR0;
+};
+
+Pass1VS_Output Pass1_VS(float4 position : POSITION,
+                     float3 normal : NORMAL,
+                     float2 uv : TEXCOORD0,
+                     float2 uvSp : TEXCOORD1,
+                     uniform bool useTexture, uniform bool useSphereMap, uniform bool useToon)
+{
+    Pass1VS_Output result = (Pass1VS_Output)0;
+
+    result.Pos = mul(position, WorldViewProjMatrix);
+    result.Tex = uv;
+    result.Normal = normalize(mul(normal, (float3x3)WorldMatrix));
+    result.Eye = CameraPosition - mul(position, WorldMatrix).xyz;
+
+    result.Color.rgb = AmbientColor;
+    if (!useToon)
+        result.Color.rgb += max(0, dot(result.Normal, -LightDirection)) * DiffuseColor.rgb;
+    result.Color.a = DiffuseColor.a;
+    result.Color = saturate(result.Color);
+    result.Tex = uv;
+
+    if (useSphereMap)
+    {
+        if (use_subtexture)
+            result.SpTex = uvSp; // PMX subtexture coordinates
+        else
+        {
+            // Sphere map texture coordinates
+            float2 normalWV = mul(result.Normal, (float3x3)ViewMatrix);
+            result.SpTex.x = normalWV.x * 0.5f + 0.5f;
+            result.SpTex.y = normalWV.y * -0.5f + 0.5f;
+        }
+    }
+
+    return result;
+}
+
+struct Pass1PS_Output {
+	float4 NR : SV_Target0;
+    float4 Color : SV_Target1;
+    float4 Visibility : SV_Target2;
+};
+
+Pass1PS_Output Pass1_PS(Pass1VS_Output input, uniform bool useTexture, uniform bool useSphereMap, uniform bool useToon)
+{
+    Pass1PS_Output output = (Pass1PS_Output)0;
+    
+    float4 color = input.Color;
+
+    if (useTexture)
+    {
+        float4 texColor = tex2D(ObjTexSampler, input.Tex);
+        texColor.rgb = lerp(1, texColor * TextureMulValue + TextureAddValue, TextureMulValue.a + TextureAddValue.a);
+        color *= texColor;
+    }
+
+    if (useSphereMap)
+    {
+        float4 texSubColor = tex2D(ObjSphareSampler, input.SpTex);
+        texSubColor.rgb = lerp(spadd ? 0 : 1, texSubColor * SphereMulValue + SphereAddValue, SphereMulValue.a + SphereAddValue.a);
+        if (spadd)
+            color.rgb += texSubColor.rgb;
+        else
+            color.rgb *= texSubColor.rgb;
+
+        color.a *= texSubColor.a;
+    }
+    output.Color = color;
+
+    float3 normal = input.Normal;
+    float3x3 tbn = compute_tangent_frame(normalize(input.Normal), normalize(input.Eye), normalize(input.Tex));
+    #ifdef NORMAL_TEX
+        float loop = 1;
+        #ifdef NORMAL_LOOP
+            loop = NORMAL_LOOP;
+        #endif
+        float3 normalTexture = tex2D(NormalMapSampler, input.Tex * loop).rgb;
+        #ifdef NORMAL_INVERTG
+            normalTexture.g = 1 - normalTexture.g;
+        #endif
+        normal = normalize(mul(normalTexture * 2 - 1, tbn));
+    #endif
+
+    float2 normalW = mul(normal, (float3x3)ViewMatrix);
+    normalW = normalW * float2(0.5, -0.5) + float2(0.5, 0.5);
+    float rim = length(normalW - float2(0.5, 0.5));
+    output.NR = float4(normalW, rim, color.a);
+
+    #ifdef GLASS
+    output.Visibility = float4(1,1,1,color.a);
+    #else
+    output.Visibility = float4(0,1,1,color.a);
+    #endif 
+
+    return output;
+}
+
+
+#define PASS_SCRIPT "RenderColorTarget0=NormalTarget;" \
+                    "RenderColorTarget1=ColorTarget;" \
+                    "RenderColorTarget2=VisibilityTarget;"  \
+                    "RenderDepthStencilTarget=Depth0;" \
+                    "Pass=Pass1;"
+
+technique MainTec0  < string MMDPass = "object_ss"; bool UseTexture = false; bool UseSphereMap = false; bool UseToon = false;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(false, false, false);
+        PixelShader  = compile ps_3_0 Pass1_PS(false, false, false);
+    }
+}
+
+technique MainTec1  < string MMDPass = "object_ss"; bool UseTexture = true; bool UseSphereMap = false; bool UseToon = false;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(true, false, false);
+        PixelShader  = compile ps_3_0 Pass1_PS(true, false, false);
+    }
+}
+
+technique MainTec2  < string MMDPass = "object_ss"; bool UseTexture = false; bool UseSphereMap = true; bool UseToon = false;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(false, true, false);
+        PixelShader  = compile ps_3_0 Pass1_PS(false, true, false);
+    }
+}
+
+technique MainTec3  < string MMDPass = "object_ss"; bool UseTexture = true; bool UseSphereMap = true; bool UseToon = false;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(true, true, false);
+        PixelShader  = compile ps_3_0 Pass1_PS(true, true, false);
+    }
+}
+
+technique MainTec4  < string MMDPass = "object_ss"; bool UseTexture = false; bool UseSphereMap = false; bool UseToon = true;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(false, false, true);
+        PixelShader  = compile ps_3_0 Pass1_PS(false, false, true);
+    }
+}
+
+technique MainTec5  < string MMDPass = "object_ss"; bool UseTexture = true; bool UseSphereMap = false; bool UseToon = true;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(true, false, true);
+        PixelShader  = compile ps_3_0 Pass1_PS(true, false, true);
+    }
+}
+
+technique MainTec6  < string MMDPass = "object_ss"; bool UseTexture = false; bool UseSphereMap = true; bool UseToon = true;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(false, true, true);
+        PixelShader  = compile ps_3_0 Pass1_PS(false, true, true);
+    }
+}
+
+technique MainTec7  < string MMDPass = "object_ss"; bool UseTexture = true; bool UseSphereMap = true; bool UseToon = true;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(true, true, true);
+        PixelShader  = compile ps_3_0 Pass1_PS(true, true, true);
+    }
+}
+
+technique MainTecBS0  < string MMDPass = "object_ss"; bool UseTexture = false; bool UseSphereMap = false; bool UseToon = false;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(false, false, false);
+        PixelShader  = compile ps_3_0 Pass1_PS(false, false, false);
+    }
+}
+
+technique MainTecBS1  < string MMDPass = "object_ss"; bool UseTexture = true; bool UseSphereMap = false; bool UseToon = false;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(true, false, false);
+        PixelShader  = compile ps_3_0 Pass1_PS(true, false, false);
+    }
+}
+
+technique MainTecBS2  < string MMDPass = "object_ss"; bool UseTexture = false; bool UseSphereMap = true; bool UseToon = false;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(false, true, false);
+        PixelShader  = compile ps_3_0 Pass1_PS(false, true, false);
+    }
+}
+
+technique MainTecBS3  < string MMDPass = "object_ss"; bool UseTexture = true; bool UseSphereMap = true; bool UseToon = false;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(true, true, false);
+        PixelShader  = compile ps_3_0 Pass1_PS(true, true, false);
+    }
+}
+
+technique MainTecBS4  < string MMDPass = "object_ss"; bool UseTexture = false; bool UseSphereMap = false; bool UseToon = true;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(false, false, true);
+        PixelShader  = compile ps_3_0 Pass1_PS(false, false, true);
+    }
+}
+
+technique MainTecBS5  < string MMDPass = "object_ss"; bool UseTexture = true; bool UseSphereMap = false; bool UseToon = true;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(true, false, true);
+        PixelShader  = compile ps_3_0 Pass1_PS(true, false, true);
+    }
+}
+
+technique MainTecBS6  < string MMDPass = "object_ss"; bool UseTexture = false; bool UseSphereMap = true; bool UseToon = true;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(false, true, true);
+        PixelShader  = compile ps_3_0 Pass1_PS(false, true, true);
+    }
+}
+
+technique MainTecBS7  < string MMDPass = "object_ss"; bool UseTexture = true; bool UseSphereMap = true; bool UseToon = true;
+                        string script = PASS_SCRIPT; > {
+    pass Pass1 {
+        VertexShader = compile vs_3_0 Pass1_VS(true, true, true);
+        PixelShader  = compile ps_3_0 Pass1_PS(true, true, true);
+    }
+}
